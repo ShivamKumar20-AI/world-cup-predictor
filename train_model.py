@@ -18,7 +18,10 @@ def train():
         "home_win_rate",
         "away_win_rate",
         "win_rate_diff",
-        "goal_diff"
+        "goal_diff",
+        "home_rank",
+        "away_rank",
+        "rank_diff"
     ]]
 
     y = df["outcome"]
