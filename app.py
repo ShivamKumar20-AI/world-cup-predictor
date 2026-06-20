@@ -2,6 +2,11 @@ import streamlit as st
 import pickle
 import numpy as np
 import pandas as pd
+import requests
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 TEAM_FLAGS = {
     "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "France": "🇫🇷", "Germany": "🇩🇪", "Spain": "🇪🇸",
@@ -20,10 +25,44 @@ TEAM_FLAGS = {
     "New Zealand": "🇳🇿", "Panama": "🇵🇦", "Bolivia": "🇧🇴", "Paraguay": "🇵🇾",
     "Venezuela": "🇻🇪", "Honduras": "🇭🇳", "Jamaica": "🇯🇲", "Cuba": "🇨🇺",
     "China PR": "🇨🇳", "India": "🇮🇳", "Indonesia": "🇮🇩", "Thailand": "🇹🇭",
+    "United States": "🇺🇸", "South Africa": "🇿🇦", "IR Iran": "🇮🇷",
+    "Korea Republic": "🇰🇷", "Czechia": "🇨🇿",
 }
 
 def get_flag(team):
     return TEAM_FLAGS.get(team, "🏳️")
+
+@st.cache_data(ttl=600)
+def fetch_live_wc_matches():
+    api_key = os.getenv("FOOTBALL_DATA_API_KEY")
+    if not api_key:
+        return pd.DataFrame()
+    try:
+        headers = {"X-Auth-Token": api_key}
+        response = requests.get(
+            "https://api.football-data.org/v4/competitions/WC/matches",
+            headers=headers,
+            timeout=5
+        )
+        data = response.json()
+        rows = []
+        for match in data.get("matches", []):
+            if match["status"] == "FINISHED":
+                rows.append({
+                    "date": match["utcDate"][:10],
+                    "home_team": match["homeTeam"]["name"],
+                    "away_team": match["awayTeam"]["name"],
+                    "home_score": match["score"]["fullTime"]["home"],
+                    "away_score": match["score"]["fullTime"]["away"],
+                    "tournament": "FIFA World Cup",
+                    "neutral": True
+                })
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 @st.cache_resource
 def load_model():
@@ -33,6 +72,7 @@ def load_model():
 @st.cache_data
 def load_data():
     results = pd.read_csv("data/results.csv")
+    results["date"] = pd.to_datetime(results["date"])
     teams = sorted(set(results["home_team"].unique()) | set(results["away_team"].unique()))
 
     dfs = []
@@ -181,11 +221,19 @@ def get_wc_team_stats(wc_stats, team):
 st.set_page_config(page_title="2026 World Cup Predictor", page_icon="⚽", layout="centered")
 
 st.title("⚽ 2026 FIFA World Cup Predictor")
-st.caption("ML-powered match outcome predictor using form, Elo ratings, FIFA rankings, head-to-head record and World Cup history")
+st.caption("ML-powered match outcome predictor using form, Elo ratings, FIFA rankings, head-to-head record and live 2026 World Cup data")
 st.divider()
 
 model = load_model()
 df_results, teams, rankings, elo, wc_stats = load_data()
+
+live_matches = fetch_live_wc_matches()
+if not live_matches.empty:
+    df_results = pd.concat([df_results, live_matches], ignore_index=True)
+    df_results = df_results.sort_values("date").reset_index(drop=True)
+    st.success(f"✅ Live data loaded — {len(live_matches)} 2026 World Cup matches included")
+else:
+    st.info("ℹ️ Using historical data only")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -211,87 +259,4 @@ else:
             h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, home_team)
             a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, away_team)
 
-            features = np.array([[
-                h_form, a_form, h_form - a_form,
-                h_gf, a_gf, h_ga, a_ga,
-                h_wr, a_wr, h_wr - a_wr,
-                h_gf - a_gf,
-                h_rank, a_rank, a_rank - h_rank,
-                h2h_home, h2h_away,
-                0,
-                h_wc, a_wc, h_wc - a_wc,
-                h_elo, a_elo, h_elo - a_elo,
-                h_yc, a_yc,
-                h_rc, a_rc,
-                h_sot, a_sot,
-                h_poss, a_poss,
-                h_sot - a_sot,
-                h_poss - a_poss
-            ]])
-
-            prediction = model.predict(features)[0]
-            probabilities = model.predict_proba(features)[0]
-            classes = model.classes_
-            prob_dict = dict(zip(classes, probabilities))
-            away_prob = prob_dict.get(-1, 0)
-            draw_prob = prob_dict.get(0, 0)
-            home_prob = prob_dict.get(1, 0)
-
-        h_flag = get_flag(home_team)
-        a_flag = get_flag(away_team)
-
-        st.divider()
-        st.markdown("### 🏆 Prediction")
-        if prediction == 1:
-            st.success(f"{h_flag} **{home_team} Win**")
-        elif prediction == -1:
-            st.success(f"{a_flag} **{away_team} Win**")
-        else:
-            st.success(f"🤝 **Draw**")
-
-        st.markdown("### 📊 Win Probabilities")
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.markdown(f"**{h_flag} {home_team}**")
-            st.progress(home_prob)
-            st.markdown(f"**{home_prob:.0%}**")
-        with col2:
-            st.markdown("**🤝 Draw**")
-            st.progress(draw_prob)
-            st.markdown(f"**{draw_prob:.0%}**")
-        with col3:
-            st.markdown(f"**{a_flag} {away_team}**")
-            st.progress(away_prob)
-            st.markdown(f"**{away_prob:.0%}**")
-
-        st.divider()
-        st.markdown("### 📋 Team Stats")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown(f"**{h_flag} {home_team}**")
-            st.write(f"🎯 Elo Rating: **{int(h_elo)}**")
-            st.write(f"📈 FIFA Ranking: **#{int(h_rank)}**")
-            st.write(f"💪 Form score: **{h_form:.2f}**")
-            st.write(f"⚽ Avg goals scored: **{h_gf:.2f}**")
-            st.write(f"🛡️ Avg goals conceded: **{h_ga:.2f}**")
-            st.write(f"🏆 Win rate: **{h_wr:.0%}**")
-            st.write(f"⚔️ H2H win rate: **{h2h_home:.0%}**")
-            st.write(f"🌍 World Cup win rate: **{h_wc:.0%}**")
-            st.write(f"🎯 Avg shots on target: **{h_sot:.1f}**")
-            st.write(f"🔄 Avg possession: **{h_poss:.1f}%**")
-        with col2:
-            st.markdown(f"**{a_flag} {away_team}**")
-            st.write(f"🎯 Elo Rating: **{int(a_elo)}**")
-            st.write(f"📈 FIFA Ranking: **#{int(a_rank)}**")
-            st.write(f"💪 Form score: **{a_form:.2f}**")
-            st.write(f"⚽ Avg goals scored: **{a_gf:.2f}**")
-            st.write(f"🛡️ Avg goals conceded: **{a_ga:.2f}**")
-            st.write(f"🏆 Win rate: **{a_wr:.0%}**")
-            st.write(f"⚔️ H2H win rate: **{h2h_away:.0%}**")
-            st.write(f"🌍 World Cup win rate: **{a_wc:.0%}**")
-            st.write(f"🎯 Avg shots on target: **{a_sot:.1f}**")
-            st.write(f"🔄 Avg possession: **{a_poss:.1f}%**")
-
-        st.divider()
-        st.caption("Built by Shivam Kumar · [GitHub](https://github.com/ShivamKumar20-AI/world-cup-predictor) · Model accuracy: 58.03%")
-
+            features = np.array([h_form, a_form, h_form - a_form, h_gf, a_gf, h_ga, a_ga, h_wr, a_wr, h_wr - a_wr, h_gf - a_gf, h_rank, a_rank, h_rank - a_rank, h2h_home, h2h_away, 0, h_wc, a_wc, h_wc - a_wc, h_elo, a_elo, h_elo - a_elo, h_yc, a_yc, h_rc, a_rc, h_sot, a_sot, h_poss, a_poss, h_sot - a_sot, h_poss - a_poss])
