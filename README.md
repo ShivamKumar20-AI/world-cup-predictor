@@ -3,7 +3,8 @@
 An ML-powered match outcome predictor for the 2026 FIFA World Cup. Select any two international teams and get a Win/Draw/Loss prediction with confidence probabilities, powered by a Random Forest classifier trained on 25,000+ international matches.
 
 ## 🔗 Live Demo
-[Try it here]((https://fifa-world-cup-predictor-2026.streamlit.app/))
+[Try it here]
+((https://fifa-world-cup-predictor-2026.streamlit.app/))
 
 ## 📊 Model Performance
 | Features Added | Accuracy |
