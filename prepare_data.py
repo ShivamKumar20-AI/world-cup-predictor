@@ -18,6 +18,16 @@ def load_elo():
     elo["date"] = pd.to_datetime(elo["date"], format="mixed")
     return elo
 
+def load_wc_stats():
+    wc = pd.read_csv("data/fifa_wc_mens_match_dataset_1970_2022.csv")
+    team_stats = wc.groupby("team_name").agg(
+        avg_yellow_cards=("yellow_cards", "mean"),
+        avg_red_cards=("red_cards", "mean"),
+        avg_shots_on_target=("shots_on_target", "mean"),
+        avg_possession=("possession", "mean")
+    ).reset_index()
+    return team_stats
+
 def get_ranking(rankings, team, date):
     team_ranks = rankings[
         (rankings["country_full"] == team) &
@@ -36,6 +46,17 @@ def get_elo(elo, team, date):
         return 1500
     return team_elo.sort_values("date").iloc[-1]["rating"]
 
+def get_wc_team_stats(wc_stats, team):
+    row = wc_stats[wc_stats["team_name"] == team]
+    if len(row) == 0:
+        return 2.0, 0.1, 5.0, 50.0
+    return (
+        row["avg_yellow_cards"].values[0],
+        row["avg_red_cards"].values[0],
+        row["avg_shots_on_target"].values[0] if not np.isnan(row["avg_shots_on_target"].values[0]) else 5.0,
+        row["avg_possession"].values[0] if not np.isnan(row["avg_possession"].values[0]) else 50.0
+    )
+
 def load_and_prepare():
     results = pd.read_csv("data/results.csv")
     results["date"] = pd.to_datetime(results["date"])
@@ -44,6 +65,7 @@ def load_and_prepare():
 
     rankings = load_rankings()
     elo = load_elo()
+    wc_stats = load_wc_stats()
 
     print(f"Total matches loaded: {len(results)}")
 
@@ -176,6 +198,9 @@ def load_and_prepare():
         h_wc = get_world_cup_performance(results, match["home_team"], match["date"])
         a_wc = get_world_cup_performance(results, match["away_team"], match["date"])
 
+        h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, match["home_team"])
+        a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, match["away_team"])
+
         rows.append({
             "home_form": h_form,
             "away_form": a_form,
@@ -200,6 +225,16 @@ def load_and_prepare():
             "home_elo": h_elo,
             "away_elo": a_elo,
             "elo_diff": h_elo - a_elo,
+            "home_yellow_cards": h_yc,
+            "away_yellow_cards": a_yc,
+            "home_red_cards": h_rc,
+            "away_red_cards": a_rc,
+            "home_shots_on_target": h_sot,
+            "away_shots_on_target": a_sot,
+            "home_possession": h_poss,
+            "away_possession": a_poss,
+            "shots_on_target_diff": h_sot - a_sot,
+            "possession_diff": h_poss - a_poss,
             "outcome": match["outcome"]
         })
 

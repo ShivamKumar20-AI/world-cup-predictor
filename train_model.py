@@ -30,7 +30,17 @@ def train():
         "wc_performance_diff",
         "home_elo",
         "away_elo",
-        "elo_diff"
+        "elo_diff",
+        "home_yellow_cards",
+        "away_yellow_cards",
+        "home_red_cards",
+        "away_red_cards",
+        "home_shots_on_target",
+        "away_shots_on_target",
+        "home_possession",
+        "away_possession",
+        "shots_on_target_diff",
+        "possession_diff"
     ]]
 
     y = df["outcome"]

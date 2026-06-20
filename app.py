@@ -26,7 +26,15 @@ def load_data():
     elo = pd.read_csv("data/eloratings.csv")
     elo["date"] = pd.to_datetime(elo["date"], format="mixed")
 
-    return results, teams, rankings, elo
+    wc = pd.read_csv("data/fifa_wc_mens_match_dataset_1970_2022.csv")
+    wc_stats = wc.groupby("team_name").agg(
+        avg_yellow_cards=("yellow_cards", "mean"),
+        avg_red_cards=("red_cards", "mean"),
+        avg_shots_on_target=("shots_on_target", "mean"),
+        avg_possession=("possession", "mean")
+    ).reset_index()
+
+    return results, teams, rankings, elo, wc_stats
 
 def get_team_stats(df_results, team, n=10):
     team_matches = df_results[
@@ -133,12 +141,27 @@ def get_wc_performance(df_results, team):
                 points.append(0)
     return np.mean(points)
 
+def get_wc_team_stats(wc_stats, team):
+    row = wc_stats[wc_stats["team_name"] == team]
+    if len(row) == 0:
+        return 2.0, 0.1, 5.0, 50.0
+    yc = row["avg_yellow_cards"].values[0]
+    rc = row["avg_red_cards"].values[0]
+    sot = row["avg_shots_on_target"].values[0]
+    poss = row["avg_possession"].values[0]
+    return (
+        yc,
+        rc,
+        sot if not np.isnan(sot) else 5.0,
+        poss if not np.isnan(poss) else 50.0
+    )
+
 st.set_page_config(page_title="2026 World Cup Predictor", page_icon="⚽")
 st.title("⚽ 2026 FIFA World Cup Predictor")
 st.caption("Select two teams to predict the match outcome")
 
 model = load_model()
-df_results, teams, rankings, elo = load_data()
+df_results, teams, rankings, elo, wc_stats = load_data()
 
 col1, col2 = st.columns(2)
 with col1:
@@ -166,6 +189,9 @@ else:
             h_wc = get_wc_performance(df_results, home_team)
             a_wc = get_wc_performance(df_results, away_team)
 
+            h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, home_team)
+            a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, away_team)
+
             features = np.array([[
                 h_form, a_form, h_form - a_form,
                 h_gf, a_gf, h_ga, a_ga,
@@ -175,7 +201,13 @@ else:
                 h2h_home, h2h_away,
                 0,
                 h_wc, a_wc, h_wc - a_wc,
-                h_elo, a_elo, h_elo - a_elo
+                h_elo, a_elo, h_elo - a_elo,
+                h_yc, a_yc,
+                h_rc, a_rc,
+                h_sot, a_sot,
+                h_poss, a_poss,
+                h_sot - a_sot,
+                h_poss - a_poss
             ]])
 
             prediction = model.predict(features)[0]
@@ -218,6 +250,8 @@ else:
             st.write(f"Win rate: {h_wr:.0%}")
             st.write(f"H2H win rate: {h2h_home:.0%}")
             st.write(f"World Cup win rate: {h_wc:.0%}")
+            st.write(f"Avg shots on target: {h_sot:.1f}")
+            st.write(f"Avg possession: {h_poss:.1f}%")
         with col2:
             st.markdown(f"**{away_team}**")
             st.write(f"Elo Rating: {int(a_elo)}")
@@ -228,3 +262,5 @@ else:
             st.write(f"Win rate: {a_wr:.0%}")
             st.write(f"H2H win rate: {h2h_away:.0%}")
             st.write(f"World Cup win rate: {a_wc:.0%}")
+            st.write(f"Avg shots on target: {a_sot:.1f}")
+            st.write(f"Avg possession: {a_poss:.1f}%")
