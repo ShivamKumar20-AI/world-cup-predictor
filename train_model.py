@@ -23,6 +23,7 @@ FEATURES = [
     "home_shots_on_target", "away_shots_on_target",
     "home_possession", "away_possession",
     "shots_on_target_diff", "possession_diff",
+    "home_form_trend", "away_form_trend", "form_trend_diff",
 ]
 
 

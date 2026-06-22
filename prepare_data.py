@@ -276,6 +276,7 @@ def load_and_prepare():
 
     print("Building form cache...")
     form_cache = build_team_form_cache(results)
+    form_cache_5 = build_team_form_cache(results, n=5)
 
     print("Building H2H cache...")
     h2h_cache = build_h2h_cache(results)
@@ -290,6 +291,11 @@ def load_and_prepare():
 
         h_form, h_gf, h_ga, h_wr = form_cache.get((ht, date), (0.5, 0.0, 0.0, 0.5))
         a_form, a_gf, a_ga, a_wr = form_cache.get((at, date), (0.5, 0.0, 0.0, 0.5))
+
+        h_form5, _, _, _ = form_cache_5.get((ht, date), (0.5, 0.0, 0.0, 0.5))
+        a_form5, _, _, _ = form_cache_5.get((at, date), (0.5, 0.0, 0.0, 0.5))
+        h_form_trend = h_form5 - h_form
+        a_form_trend = a_form5 - a_form
 
         h_rank = match["home_rank"]
         a_rank = match["away_rank"]
@@ -311,6 +317,9 @@ def load_and_prepare():
             "home_form":             h_form,
             "away_form":             a_form,
             "form_diff":             h_form - a_form,
+            "home_form_trend":       h_form_trend,
+            "away_form_trend":       a_form_trend,
+            "form_trend_diff":       h_form_trend - a_form_trend,
             # Goals
             "home_goals_scored":     h_gf,
             "away_goals_scored":     a_gf,
