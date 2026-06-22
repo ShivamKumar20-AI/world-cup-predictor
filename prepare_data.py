@@ -1,5 +1,9 @@
 import pandas as pd
 import numpy as np
+from tqdm import tqdm
+
+
+# ── Loaders ──────────────────────────────────────────────────────────────────
 
 def load_rankings():
     dfs = []
@@ -13,10 +17,12 @@ def load_rankings():
     rankings["rank_date"] = pd.to_datetime(rankings["rank_date"])
     return rankings
 
+
 def load_elo():
     elo = pd.read_csv("data/eloratings.csv")
     elo["date"] = pd.to_datetime(elo["date"], format="mixed")
     return elo
+
 
 def load_wc_stats():
     wc = pd.read_csv("data/fifa_wc_mens_match_dataset_1970_2022.csv")
@@ -28,23 +34,8 @@ def load_wc_stats():
     ).reset_index()
     return team_stats
 
-def get_ranking(rankings, team, date):
-    team_ranks = rankings[
-        (rankings["country_full"] == team) &
-        (rankings["rank_date"] <= date)
-    ]
-    if len(team_ranks) == 0:
-        return 100
-    return team_ranks.sort_values("rank_date").iloc[-1]["rank"]
 
-def get_elo(elo, team, date):
-    team_elo = elo[
-        (elo["team"] == team) &
-        (elo["date"] <= date)
-    ]
-    if len(team_elo) == 0:
-        return 1500
-    return team_elo.sort_values("date").iloc[-1]["rating"]
+# ── Lookup helpers ────────────────────────────────────────────────────────────
 
 def get_wc_team_stats(wc_stats, team):
     row = wc_stats[wc_stats["team_name"] == team]
@@ -57,11 +48,212 @@ def get_wc_team_stats(wc_stats, team):
         row["avg_possession"].values[0] if not np.isnan(row["avg_possession"].values[0]) else 50.0
     )
 
+
+def elo_win_prob(home_elo, away_elo):
+    """Expected win probability from Elo ratings (non-linear, more informative than raw diff)."""
+    return 1 / (1 + 10 ** ((away_elo - home_elo) / 400))
+
+
+# ── Tournament weight ─────────────────────────────────────────────────────────
+# Check qualifiers FIRST so "FIFA World Cup qualification" gets weight 2, not 3.
+
+def tournament_weight(tournament):
+    if any(t in tournament for t in ["qualification", "Qualifier"]):
+        return 2.0
+    elif any(t in tournament for t in ["FIFA World Cup", "UEFA Euro", "Copa America", "AFC Asian Cup"]):
+        return 3.0
+    return 1.0
+
+
+# ── Per-team rolling stats (computed once per team, not per row) ──────────────
+
+def build_team_form_cache(results, n=10):
+    """
+    Pre-compute rolling form stats for every team at every match date.
+    Returns a dict: {(team, date) -> (form, avg_gf, avg_ga, win_rate)}
+    Much faster than recomputing inside iterrows().
+    """
+    results = results.sort_values("date").reset_index(drop=True)
+    cache = {}
+
+    all_teams = pd.concat([results["home_team"], results["away_team"]]).unique()
+
+    for team in tqdm(all_teams, desc="Building form cache"):
+        team_matches = results[
+            (results["home_team"] == team) | (results["away_team"] == team)
+        ].copy()
+
+        for i, (_, match) in enumerate(team_matches.iterrows()):
+            past = team_matches.iloc[max(0, i - n):i]
+
+            if len(past) == 0:
+                cache[(team, match["date"])] = (0.5, 0.0, 0.0, 0.5)
+                continue
+
+            points, goals_scored, goals_conceded = [], [], []
+            wins = 0
+
+            for _, row in past.iterrows():
+                w = tournament_weight(row["tournament"])
+                if row["home_team"] == team:
+                    gs, gc = float(row["home_score"]), float(row["away_score"])
+                    if row["outcome"] == 1:   points.append(1 * w); wins += 1
+                    elif row["outcome"] == 0: points.append(0.5 * w)
+                    else:                     points.append(0)
+                else:
+                    gs, gc = float(row["away_score"]), float(row["home_score"])
+                    if row["outcome"] == -1:  points.append(1 * w); wins += 1
+                    elif row["outcome"] == 0: points.append(0.5 * w)
+                    else:                     points.append(0)
+                goals_scored.append(gs)
+                goals_conceded.append(gc)
+
+            form = np.sum(points) / (len(points) * 3.0)
+            cache[(team, match["date"])] = (
+                form,
+                np.mean(goals_scored),
+                np.mean(goals_conceded),
+                wins / len(past)
+            )
+
+    return cache
+
+
+def build_h2h_cache(results, n=10):
+    """
+    Pre-compute H2H win rate for every (home_team, away_team, date) triplet.
+    Returns a dict: {(home_team, away_team, date) -> home_win_rate}
+    """
+    results = results.sort_values("date").reset_index(drop=True)
+    cache = {}
+
+    pairs = results[["home_team", "away_team"]].drop_duplicates()
+
+    for _, pair in tqdm(pairs.iterrows(), total=len(pairs), desc="Building H2H cache"):
+        ht, at = pair["home_team"], pair["away_team"]
+        h2h = results[
+            ((results["home_team"] == ht) & (results["away_team"] == at)) |
+            ((results["home_team"] == at) & (results["away_team"] == ht))
+        ].copy()
+
+        for i, (_, match) in enumerate(h2h.iterrows()):
+            past = h2h.iloc[max(0, i - n):i]
+            if len(past) == 0:
+                cache[(ht, at, match["date"])] = 0.5
+                continue
+            home_wins = sum(
+                1 for _, r in past.iterrows()
+                if (r["home_team"] == ht and r["outcome"] == 1) or
+                   (r["away_team"] == ht and r["outcome"] == -1)
+            )
+            cache[(ht, at, match["date"])] = min(home_wins / len(past), 1.0)
+
+    return cache
+
+
+def build_wc_performance_cache(results):
+    """
+    Pre-compute World Cup performance for every (team, date).
+    Returns a dict: {(team, date) -> wc_win_rate}
+    """
+    wc = results[results["tournament"] == "FIFA World Cup"].copy()
+    cache = {}
+
+    all_teams = pd.concat([results["home_team"], results["away_team"]]).unique()
+
+    for team in all_teams:
+        team_wc = wc[
+            (wc["home_team"] == team) | (wc["away_team"] == team)
+        ].sort_values("date")
+
+        match_dates = results[
+            (results["home_team"] == team) | (results["away_team"] == team)
+        ]["date"].unique()
+
+        for date in match_dates:
+            past_wc = team_wc[team_wc["date"] < date]
+            if len(past_wc) == 0:
+                cache[(team, date)] = 0.5
+                continue
+            points = []
+            for _, row in past_wc.iterrows():
+                if row["home_team"] == team:
+                    if row["outcome"] == 1:   points.append(1)
+                    elif row["outcome"] == 0: points.append(0.5)
+                    else:                     points.append(0)
+                else:
+                    if row["outcome"] == -1:  points.append(1)
+                    elif row["outcome"] == 0: points.append(0.5)
+                    else:                     points.append(0)
+            cache[(team, date)] = np.mean(points)
+
+    return cache
+
+
+# ── Rankings / Elo via merge_asof (vectorised, no loop) ──────────────────────
+
+def merge_rankings(results, rankings):
+    """Attach home and away FIFA rank to each match using merge_asof."""
+    ranks = rankings.sort_values("rank_date")
+
+    home_ranks = pd.merge_asof(
+        results[["date", "home_team"]].sort_values("date"),
+        ranks[["rank_date", "country_full", "rank"]].rename(
+            columns={"rank_date": "date", "country_full": "home_team", "rank": "home_rank"}
+        ),
+        on="date", by="home_team", direction="backward"
+    )
+    away_ranks = pd.merge_asof(
+        results[["date", "away_team"]].sort_values("date"),
+        ranks[["rank_date", "country_full", "rank"]].rename(
+            columns={"rank_date": "date", "country_full": "away_team", "rank": "away_rank"}
+        ),
+        on="date", by="away_team", direction="backward"
+    )
+
+    results = results.sort_values("date").copy()
+    results["home_rank"] = home_ranks["home_rank"].values
+    results["away_rank"] = away_ranks["away_rank"].values
+    results["home_rank"] = results["home_rank"].fillna(100)
+    results["away_rank"] = results["away_rank"].fillna(100)
+    return results
+
+
+def merge_elo(results, elo):
+    """Attach home and away Elo rating to each match using merge_asof."""
+    elo_sorted = elo.sort_values("date")
+
+    home_elo = pd.merge_asof(
+        results[["date", "home_team"]].sort_values("date"),
+        elo_sorted[["date", "team", "rating"]].rename(
+            columns={"team": "home_team", "rating": "home_elo"}
+        ),
+        on="date", by="home_team", direction="backward"
+    )
+    away_elo = pd.merge_asof(
+        results[["date", "away_team"]].sort_values("date"),
+        elo_sorted[["date", "team", "rating"]].rename(
+            columns={"team": "away_team", "rating": "away_elo"}
+        ),
+        on="date", by="away_team", direction="backward"
+    )
+
+    results = results.sort_values("date").copy()
+    results["home_elo"] = home_elo["home_elo"].values
+    results["away_elo"] = away_elo["away_elo"].values
+    results["home_elo"] = results["home_elo"].fillna(1500)
+    results["away_elo"] = results["away_elo"].fillna(1500)
+    return results
+
+
+# ── Main pipeline ─────────────────────────────────────────────────────────────
+
 def load_and_prepare():
     results = pd.read_csv("data/results.csv")
     results["date"] = pd.to_datetime(results["date"])
     results = results[results["date"] >= "2000-01-01"].copy()
     results = results[results["home_score"].notna() & results["away_score"].notna()].copy()
+    results = results.sort_values("date").reset_index(drop=True)
 
     rankings = load_rankings()
     elo = load_elo()
@@ -70,179 +262,112 @@ def load_and_prepare():
     print(f"Total matches loaded: {len(results)}")
 
     def get_outcome(row):
-        if row["home_score"] > row["away_score"]:
-            return 1
-        elif row["home_score"] == row["away_score"]:
-            return 0
-        else:
-            return -1
+        if row["home_score"] > row["away_score"]:    return 1
+        elif row["home_score"] == row["away_score"]: return 0
+        else:                                         return -1
 
     results["outcome"] = results.apply(get_outcome, axis=1)
 
-    def tournament_weight(tournament):
-        if any(t in tournament for t in ["FIFA World Cup", "UEFA Euro", "Copa America", "AFC Asian Cup"]):
-            return 3.0
-        elif any(t in tournament for t in ["qualification", "Qualifier"]):
-            return 2.0
-        else:
-            return 1.0
+    print("Merging FIFA rankings...")
+    results = merge_rankings(results, rankings)
 
-    def get_team_stats(df, team, date, n=10):
-        team_matches = df[
-            ((df["home_team"] == team) | (df["away_team"] == team)) &
-            (df["date"] < date)
-        ].tail(n)
+    print("Merging Elo ratings...")
+    results = merge_elo(results, elo)
 
-        if len(team_matches) == 0:
-            return 0.5, 0, 0, 0
+    print("Building form cache...")
+    form_cache = build_team_form_cache(results)
 
-        points = []
-        goals_scored = []
-        goals_conceded = []
-        wins = 0
+    print("Building H2H cache...")
+    h2h_cache = build_h2h_cache(results)
 
-        for _, row in team_matches.iterrows():
-            weight = tournament_weight(row["tournament"])
-            if row["home_team"] == team:
-                gs = float(row["home_score"])
-                gc = float(row["away_score"])
-                if row["outcome"] == 1:
-                    points.append(1 * weight)
-                    wins += 1
-                elif row["outcome"] == 0:
-                    points.append(0.5 * weight)
-                else:
-                    points.append(0)
-            else:
-                gs = float(row["away_score"])
-                gc = float(row["home_score"])
-                if row["outcome"] == -1:
-                    points.append(1 * weight)
-                    wins += 1
-                elif row["outcome"] == 0:
-                    points.append(0.5 * weight)
-                else:
-                    points.append(0)
-            goals_scored.append(gs)
-            goals_conceded.append(gc)
+    print("Building World Cup performance cache...")
+    wc_cache = build_wc_performance_cache(results)
 
-        form = np.sum(points) / (len(points) * 3.0)
-        avg_goals_scored = np.mean(goals_scored)
-        avg_goals_conceded = np.mean(goals_conceded)
-        win_rate = wins / len(team_matches)
-
-        return form, avg_goals_scored, avg_goals_conceded, win_rate
-
-    def get_head_to_head(df, home_team, away_team, date, n=10):
-        h2h = df[
-            (
-                ((df["home_team"] == home_team) & (df["away_team"] == away_team)) |
-                ((df["home_team"] == away_team) & (df["away_team"] == home_team))
-            ) &
-            (df["date"] < date)
-        ].tail(n)
-
-        if len(h2h) == 0:
-            return 0.5
-
-        home_wins = 0
-        for _, row in h2h.iterrows():
-            if row["home_team"] == home_team and row["outcome"] == 1:
-                home_wins += 1
-            elif row["away_team"] == home_team and row["outcome"] == -1:
-                home_wins += 1
-
-        return home_wins / len(h2h)
-
-    def get_world_cup_performance(df, team, date):
-        wc_matches = df[
-            (df["tournament"] == "FIFA World Cup") &
-            ((df["home_team"] == team) | (df["away_team"] == team)) &
-            (df["date"] < date)
-        ]
-        if len(wc_matches) == 0:
-            return 0.5
-        points = []
-        for _, row in wc_matches.iterrows():
-            if row["home_team"] == team:
-                if row["outcome"] == 1:
-                    points.append(1)
-                elif row["outcome"] == 0:
-                    points.append(0.5)
-                else:
-                    points.append(0)
-            else:
-                if row["outcome"] == -1:
-                    points.append(1)
-                elif row["outcome"] == 0:
-                    points.append(0.5)
-                else:
-                    points.append(0)
-        return np.mean(points)
-
-    print("Building features (this may take a few minutes)...")
+    print("Assembling features...")
     rows = []
-    for _, match in results.iterrows():
-        h_form, h_gf, h_ga, h_wr = get_team_stats(results, match["home_team"], match["date"])
-        a_form, a_gf, a_ga, a_wr = get_team_stats(results, match["away_team"], match["date"])
+    for _, match in tqdm(results.iterrows(), total=len(results), desc="Assembling rows"):
+        ht, at, date = match["home_team"], match["away_team"], match["date"]
 
-        h_rank = get_ranking(rankings, match["home_team"], match["date"])
-        a_rank = get_ranking(rankings, match["away_team"], match["date"])
+        h_form, h_gf, h_ga, h_wr = form_cache.get((ht, date), (0.5, 0.0, 0.0, 0.5))
+        a_form, a_gf, a_ga, a_wr = form_cache.get((at, date), (0.5, 0.0, 0.0, 0.5))
 
-        h_elo = get_elo(elo, match["home_team"], match["date"])
-        a_elo = get_elo(elo, match["away_team"], match["date"])
+        h_rank = match["home_rank"]
+        a_rank = match["away_rank"]
 
-        h2h_home = get_head_to_head(results, match["home_team"], match["away_team"], match["date"])
-        h2h_away = get_head_to_head(results, match["away_team"], match["home_team"], match["date"])
+        h_elo = match["home_elo"]
+        a_elo = match["away_elo"]
 
-        h_wc = get_world_cup_performance(results, match["home_team"], match["date"])
-        a_wc = get_world_cup_performance(results, match["away_team"], match["date"])
+        h2h_home = h2h_cache.get((ht, at, date), 0.5)
+        h2h_away = h2h_cache.get((at, ht, date), 0.5)
 
-        h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, match["home_team"])
-        a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, match["away_team"])
+        h_wc = wc_cache.get((ht, date), 0.5)
+        a_wc = wc_cache.get((at, date), 0.5)
+
+        h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, ht)
+        a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, at)
 
         rows.append({
-            "home_form": h_form,
-            "away_form": a_form,
-            "form_diff": h_form - a_form,
-            "home_goals_scored": h_gf,
-            "away_goals_scored": a_gf,
-            "home_goals_conceded": h_ga,
-            "away_goals_conceded": a_ga,
-            "home_win_rate": h_wr,
-            "away_win_rate": a_wr,
-            "win_rate_diff": h_wr - a_wr,
-            "goal_diff": h_gf - a_gf,
-            "home_rank": h_rank,
-            "away_rank": a_rank,
-            "rank_diff": a_rank - h_rank,
-            "h2h_home_win_rate": h2h_home,
-            "h2h_away_win_rate": h2h_away,
-            "neutral": int(match["neutral"]),
-            "home_wc_performance": h_wc,
-            "away_wc_performance": a_wc,
-            "wc_performance_diff": h_wc - a_wc,
-            "home_elo": h_elo,
-            "away_elo": a_elo,
-            "elo_diff": h_elo - a_elo,
-            "home_yellow_cards": h_yc,
-            "away_yellow_cards": a_yc,
-            "home_red_cards": h_rc,
-            "away_red_cards": a_rc,
-            "home_shots_on_target": h_sot,
-            "away_shots_on_target": a_sot,
-            "home_possession": h_poss,
-            "away_possession": a_poss,
-            "shots_on_target_diff": h_sot - a_sot,
-            "possession_diff": h_poss - a_poss,
-            "date": match["date"],
-            "outcome": match["outcome"]
+            # Form
+            "home_form":             h_form,
+            "away_form":             a_form,
+            "form_diff":             h_form - a_form,
+            # Goals
+            "home_goals_scored":     h_gf,
+            "away_goals_scored":     a_gf,
+            "home_goals_conceded":   h_ga,
+            "away_goals_conceded":   a_ga,
+            "goal_diff":             h_gf - a_gf,
+            # Win rate
+            "home_win_rate":         h_wr,
+            "away_win_rate":         a_wr,
+            "win_rate_diff":         h_wr - a_wr,
+            # FIFA rank (lower = better; positive diff = home team ranked higher)
+            "home_rank":             h_rank,
+            "away_rank":             a_rank,
+            "rank_diff":             a_rank - h_rank,
+            # H2H
+            "h2h_home_win_rate":     h2h_home,
+            "h2h_away_win_rate":     h2h_away,
+            # Venue
+            "neutral":               int(match["neutral"]),
+            # World Cup history
+            "home_wc_performance":   h_wc,
+            "away_wc_performance":   a_wc,
+            "wc_performance_diff":   h_wc - a_wc,
+            # Elo
+            "home_elo":              h_elo,
+            "away_elo":              a_elo,
+            "elo_diff":              h_elo - a_elo,
+            "home_elo_win_prob":     elo_win_prob(h_elo, a_elo),
+            # WC tactical stats
+            "home_yellow_cards":     h_yc,
+            "away_yellow_cards":     a_yc,
+            "home_red_cards":        h_rc,
+            "away_red_cards":        a_rc,
+            "home_shots_on_target":  h_sot,
+            "away_shots_on_target":  a_sot,
+            "home_possession":       h_poss,
+            "away_possession":       a_poss,
+            "shots_on_target_diff":  h_sot - a_sot,
+            "possession_diff":       h_poss - a_poss,
+            # Meta
+            "date":                  date,
+            "outcome":               match["outcome"]
         })
 
     df_features = pd.DataFrame(rows)
     df_features.to_csv("data/features.csv", index=False)
-    print(f"Done! Features saved with {len(df_features)} matches.")
+
+    with open("data/features_meta.txt", "w") as f:
+        f.write(
+            f"Built: {pd.Timestamp.now()}\n"
+            f"Matches: {len(df_features)}\n"
+            f"Features: {list(df_features.columns)}\n"
+        )
+
+    print(f"Done! Features saved with {len(df_features)} matches and {len(df_features.columns)-2} feature columns.")
     return df_features
+
 
 if __name__ == "__main__":
     load_and_prepare()
