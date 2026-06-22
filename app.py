@@ -345,10 +345,7 @@ else:
             h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, home_team)
             a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, away_team)
 
-            h_form5, _, _, _ = form_cache_5.get((home_team,), (0.5, 0.0, 0.0, 0.5)) if False else (h_form, 0, 0, 0)
-            a_form5, _, _, _ = (a_form, 0, 0, 0)
-            h_form_trend = 0.0
-            a_form_trend = 0.0
+
             features = np.array([[
                 h_form, a_form, h_form - a_form,
                 h_gf, a_gf, h_ga, a_ga,
