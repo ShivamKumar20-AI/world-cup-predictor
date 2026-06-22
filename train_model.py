@@ -1,9 +1,11 @@
 import pandas as pd
 import pickle
+import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score
 from xgboost import XGBClassifier
+
 
 FEATURES = [
     "home_form", "away_form", "form_diff",
@@ -24,27 +26,44 @@ FEATURES = [
 ]
 
 
+class XGBWrapper:
+    def __init__(self, model, label_map, label_unmap):
+        self.model = model
+        self.label_map = label_map
+        self.label_unmap = label_unmap
+        self.classes_ = sorted(label_unmap.values())
+
+    def predict(self, X):
+        raw = self.model.predict(X)
+        return np.array([self.label_unmap[int(r)] for r in raw])
+
+    def predict_proba(self, X):
+        return self.model.predict_proba(X)
+
+
 def train():
     df = pd.read_csv("data/features.csv")
 
-    X = df[FEATURES]
-    y = df["outcome"]
+    # Time-based split — train on older matches, test on recent ones
+    # Prevents future data leaking into training
+    df = df.sort_values("date").reset_index(drop=True)
+    split_idx = int(len(df) * 0.8)
+    X_train = df[FEATURES].iloc[:split_idx]
+    X_test = df[FEATURES].iloc[split_idx:]
+    y_train = df["outcome"].iloc[:split_idx]
+    y_test = df["outcome"].iloc[split_idx:]
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-
+    print(f"Train period: {df['date'].iloc[0]} → {df['date'].iloc[split_idx-1]}")
+    print(f"Test period:  {df['date'].iloc[split_idx]} → {df['date'].iloc[-1]}")
     print(f"Training on {len(X_train)} matches, testing on {len(X_test)} matches")
     print(f"Class distribution:\n{y_train.value_counts()}\n")
 
-    # --- Baseline: Random Forest ---
     print("=" * 50)
     print("Baseline: Random Forest")
     print("=" * 50)
     rf = RandomForestClassifier(
         n_estimators=200,
         max_depth=10,
-        class_weight="balanced",
         random_state=42,
         n_jobs=-1,
     )
@@ -53,12 +72,10 @@ def train():
     rf_acc = accuracy_score(y_test, rf_preds)
     print(f"Random Forest Accuracy: {rf_acc:.4%}")
 
-    # --- Primary: XGBoost ---
     print("\n" + "=" * 50)
     print("Primary Model: XGBoost")
     print("=" * 50)
 
-    # XGBoost requires numeric labels: map -1->0, 0->1, 1->2
     label_map = {-1: 0, 0: 1, 1: 2}
     label_unmap = {0: -1, 1: 0, 2: 1}
 
@@ -78,7 +95,7 @@ def train():
         objective="multi:softprob",
         num_class=3,
         eval_metric="mlogloss",
-        use_label_encoder=False,
+        early_stopping_rounds=30,
         random_state=42,
         n_jobs=-1,
     )
@@ -93,9 +110,9 @@ def train():
     xgb_preds = pd.Series(xgb_preds_mapped).map(label_unmap)
     xgb_acc = accuracy_score(y_test, xgb_preds)
 
-    print(f"\nXGBoost Accuracy:      {xgb_acc:.4%}")
-    print(f"Random Forest Accuracy:{rf_acc:.4%}")
-    print(f"Improvement:           +{(xgb_acc - rf_acc):.4%}")
+    print(f"\nXGBoost Accuracy:       {xgb_acc:.4%}")
+    print(f"Random Forest Accuracy: {rf_acc:.4%}")
+    print(f"Improvement:            +{(xgb_acc - rf_acc):.4%}")
 
     print("\nXGBoost Classification Report:")
     print(classification_report(
@@ -103,34 +120,12 @@ def train():
         target_names=["Away Win", "Draw", "Home Win"]
     ))
 
-    # --- Feature Importance ---
     print("\nTop 10 Most Important Features (XGBoost):")
     importance = pd.Series(
         xgb.feature_importances_, index=FEATURES
     ).sort_values(ascending=False)
     for feat, score in importance.head(10).items():
         print(f"  {feat:<35} {score:.4f}")
-
-    # --- Save the best model ---
-    # Wrap XGBoost in a sklearn-compatible wrapper so app.py works unchanged
-    import numpy as np
-
-    class XGBWrapper:
-        """Wraps XGBClassifier to expose predict/predict_proba with original labels."""
-
-        def __init__(self, model, label_map, label_unmap):
-            self.model = model
-            self.label_map = label_map
-            self.label_unmap = label_unmap
-            self.classes_ = sorted(label_unmap.values())  # [-1, 0, 1]
-
-        def predict(self, X):
-            raw = self.model.predict(X)
-            return np.array([self.label_unmap[int(r)] for r in raw])
-
-        def predict_proba(self, X):
-            # Returns probabilities in order of self.classes_ (-1, 0, 1)
-            return self.model.predict_proba(X)
 
     wrapped = XGBWrapper(xgb, label_map, label_unmap)
 

@@ -235,6 +235,7 @@ def load_and_prepare():
             "away_possession": a_poss,
             "shots_on_target_diff": h_sot - a_sot,
             "possession_diff": h_poss - a_poss,
+            "date": match["date"],
             "outcome": match["outcome"]
         })
 
