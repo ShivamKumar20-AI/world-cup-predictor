@@ -8,6 +8,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from xgboost import XGBClassifier
+
+
+class XGBWrapper:
+    def __init__(self, model, label_map, label_unmap):
+        self.model = model
+        self.label_map = label_map
+        self.label_unmap = label_unmap
+        self.classes_ = sorted(label_unmap.values())
+
+    def predict(self, X):
+        raw = self.model.predict(X)
+        return np.array([self.label_unmap[int(r)] for r in raw])
+
+    def predict_proba(self, X):
+        return self.model.predict_proba(X)
 TEAM_FLAGS = {
     "England": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "France": "🇫🇷", "Germany": "🇩🇪", "Spain": "🇪🇸",
     "Brazil": "🇧🇷", "Argentina": "🇦🇷", "Portugal": "🇵🇹", "Netherlands": "🇳🇱",
@@ -64,7 +80,44 @@ def fetch_live_wc_matches():
     except Exception:
         return pd.DataFrame()
 
-@st.cache_resource
+
+@st.cache_data(ttl=60)
+def fetch_wc_schedule():
+    api_key = os.getenv("FOOTBALL_DATA_API_KEY")
+    if not api_key:
+        return pd.DataFrame()
+    try:
+        headers = {"X-Auth-Token": api_key}
+        response = requests.get(
+            "https://api.football-data.org/v4/competitions/WC/matches",
+            headers=headers,
+            timeout=5
+        )
+        data = response.json()
+        rows = []
+        for match in data.get("matches", []):
+            status = match["status"]
+            if status in ("FINISHED", "IN_PLAY", "PAUSED", "TIMED", "SCHEDULED"):
+                home = match["homeTeam"]["name"]
+                away = match["awayTeam"]["name"]
+                date = match["utcDate"][:10]
+                if status == "FINISHED":
+                    score = f"{match['score']['fullTime']['home']} - {match['score']['fullTime']['away']}"
+                elif status in ("IN_PLAY", "PAUSED"):
+                    score = f"{match['score']['fullTime']['home']} - {match['score']['fullTime']['away']} 🔴 LIVE"
+                else:
+                    score = match["utcDate"][11:16] + " UTC"
+                rows.append({
+                    "Date": date,
+                    "Home": f"{get_flag(home)} {home}",
+                    "Score": score,
+                    "Away": f"{get_flag(away)} {away}",
+                    "Status": status
+                })
+        return pd.DataFrame(rows)
+    except Exception:
+        return pd.DataFrame()
+
 def load_model():
     with open("model.pkl", "rb") as f:
         return pickle.load(f)
@@ -241,6 +294,37 @@ with col1:
 with col2:
     away_team = st.selectbox("✈️ Away Team", teams, index=teams.index("France"))
 
+    # --- Live Results & Fixtures ---
+schedule = fetch_wc_schedule()
+if not schedule.empty:
+    st.markdown("### 🌍 2026 World Cup — Results & Fixtures")
+    tabs = st.tabs(["📅 All", "✅ Finished", "🔴 Live", "🕐 Upcoming"])
+    with tabs[0]:
+        st.dataframe(schedule[["Date", "Home", "Score", "Away"]],
+                     use_container_width=True, hide_index=True)
+    with tabs[1]:
+        finished = schedule[schedule["Status"] == "FINISHED"]
+        if finished.empty:
+            st.info("No finished matches yet.")
+        else:
+            st.dataframe(finished[["Date", "Home", "Score", "Away"]],
+                         use_container_width=True, hide_index=True)
+    with tabs[2]:
+        live = schedule[schedule["Status"].isin(["IN_PLAY", "PAUSED"])]
+        if live.empty:
+            st.info("No matches currently live.")
+        else:
+            st.dataframe(live[["Date", "Home", "Score", "Away"]],
+                         use_container_width=True, hide_index=True)
+    with tabs[3]:
+        upcoming = schedule[schedule["Status"].isin(["TIMED", "SCHEDULED"])]
+        if upcoming.empty:
+            st.info("No upcoming matches found.")
+        else:
+            st.dataframe(upcoming[["Date", "Home", "Score", "Away"]],
+                         use_container_width=True, hide_index=True)
+    st.divider()
+
 if home_team == away_team:
     st.warning("Please select two different teams.")
 else:
@@ -248,6 +332,8 @@ else:
         with st.spinner("Analysing team data..."):
             h_form, h_gf, h_ga, h_wr = get_team_stats(df_results, home_team)
             a_form, a_gf, a_ga, a_wr = get_team_stats(df_results, away_team)
+            h_form5, _, _, _ = get_team_stats(df_results, home_team, n=5)
+            a_form5, _, _, _ = get_team_stats(df_results, away_team, n=5)
             h_rank = get_ranking(rankings, home_team)
             a_rank = get_ranking(rankings, away_team)
             h_elo = get_elo(elo, home_team)
@@ -259,6 +345,10 @@ else:
             h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, home_team)
             a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, away_team)
 
+            h_form5, _, _, _ = form_cache_5.get((home_team,), (0.5, 0.0, 0.0, 0.5)) if False else (h_form, 0, 0, 0)
+            a_form5, _, _, _ = (a_form, 0, 0, 0)
+            h_form_trend = 0.0
+            a_form_trend = 0.0
             features = np.array([[
                 h_form, a_form, h_form - a_form,
                 h_gf, a_gf, h_ga, a_ga,
@@ -274,7 +364,10 @@ else:
                 h_sot, a_sot,
                 h_poss, a_poss,
                 h_sot - a_sot,
-                h_poss - a_poss
+                h_poss - a_poss,
+                h_form5 - h_form,
+                a_form5 - a_form,
+                (h_form5 - h_form) - (a_form5 - a_form)
             ]])
 
             prediction = model.predict(features)[0]
@@ -301,15 +394,15 @@ else:
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown(f"**{h_flag} {home_team}**")
-            st.progress(home_prob)
+            st.progress(float(home_prob))
             st.markdown(f"**{home_prob:.0%}**")
         with col2:
             st.markdown("**🤝 Draw**")
-            st.progress(draw_prob)
+            st.progress(float(draw_prob))
             st.markdown(f"**{draw_prob:.0%}**")
         with col3:
             st.markdown(f"**{a_flag} {away_team}**")
-            st.progress(away_prob)
+            st.progress(float(away_prob))
             st.markdown(f"**{away_prob:.0%}**")
 
         st.divider()
