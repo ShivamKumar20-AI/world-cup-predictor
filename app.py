@@ -259,4 +259,86 @@ else:
             h_yc, h_rc, h_sot, h_poss = get_wc_team_stats(wc_stats, home_team)
             a_yc, a_rc, a_sot, a_poss = get_wc_team_stats(wc_stats, away_team)
 
-            features = np.array([h_form, a_form, h_form - a_form, h_gf, a_gf, h_ga, a_ga, h_wr, a_wr, h_wr - a_wr, h_gf - a_gf, h_rank, a_rank, h_rank - a_rank, h2h_home, h2h_away, 0, h_wc, a_wc, h_wc - a_wc, h_elo, a_elo, h_elo - a_elo, h_yc, a_yc, h_rc, a_rc, h_sot, a_sot, h_poss, a_poss, h_sot - a_sot, h_poss - a_poss])
+            features = np.array([[
+                h_form, a_form, h_form - a_form,
+                h_gf, a_gf, h_ga, a_ga,
+                h_wr, a_wr, h_wr - a_wr,
+                h_gf - a_gf,
+                h_rank, a_rank, h_rank - a_rank,
+                h2h_home, h2h_away,
+                0,
+                h_wc, a_wc, h_wc - a_wc,
+                h_elo, a_elo, h_elo - a_elo,
+                h_yc, a_yc,
+                h_rc, a_rc,
+                h_sot, a_sot,
+                h_poss, a_poss,
+                h_sot - a_sot,
+                h_poss - a_poss
+            ]])
+
+            prediction = model.predict(features)[0]
+            probabilities = model.predict_proba(features)[0]
+            classes = model.classes_
+            prob_dict = dict(zip(classes, probabilities))
+            away_prob = prob_dict.get(-1, 0)
+            draw_prob = prob_dict.get(0, 0)
+            home_prob = prob_dict.get(1, 0)
+
+        h_flag = get_flag(home_team)
+        a_flag = get_flag(away_team)
+
+        st.divider()
+        st.markdown("### 🏆 Prediction")
+        if prediction == 1:
+            st.success(f"{h_flag} **{home_team} Win**")
+        elif prediction == -1:
+            st.success(f"{a_flag} **{away_team} Win**")
+        else:
+            st.success(f"🤝 **Draw**")
+
+        st.markdown("### 📊 Win Probabilities")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown(f"**{h_flag} {home_team}**")
+            st.progress(home_prob)
+            st.markdown(f"**{home_prob:.0%}**")
+        with col2:
+            st.markdown("**🤝 Draw**")
+            st.progress(draw_prob)
+            st.markdown(f"**{draw_prob:.0%}**")
+        with col3:
+            st.markdown(f"**{a_flag} {away_team}**")
+            st.progress(away_prob)
+            st.markdown(f"**{away_prob:.0%}**")
+
+        st.divider()
+        st.markdown("### 📋 Team Stats")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown(f"**{h_flag} {home_team}**")
+            st.write(f"🎯 Elo Rating: **{int(h_elo)}**")
+            st.write(f"📈 FIFA Ranking: **#{int(h_rank)}**")
+            st.write(f"💪 Form score: **{h_form:.2f}**")
+            st.write(f"⚽ Avg goals scored: **{h_gf:.2f}**")
+            st.write(f"🛡️ Avg goals conceded: **{h_ga:.2f}**")
+            st.write(f"🏆 Win rate: **{h_wr:.0%}**")
+            st.write(f"⚔️ H2H win rate: **{h2h_home:.0%}**")
+            st.write(f"🌍 World Cup win rate: **{h_wc:.0%}**")
+            st.write(f"🎯 Avg shots on target: **{h_sot:.1f}**")
+            st.write(f"🔄 Avg possession: **{h_poss:.1f}%**")
+        with col2:
+            st.markdown(f"**{a_flag} {away_team}**")
+            st.write(f"🎯 Elo Rating: **{int(a_elo)}**")
+            st.write(f"📈 FIFA Ranking: **#{int(a_rank)}**")
+            st.write(f"💪 Form score: **{a_form:.2f}**")
+            st.write(f"⚽ Avg goals scored: **{a_gf:.2f}**")
+            st.write(f"🛡️ Avg goals conceded: **{a_ga:.2f}**")
+            st.write(f"🏆 Win rate: **{a_wr:.0%}**")
+            st.write(f"⚔️ H2H win rate: **{h2h_away:.0%}**")
+            st.write(f"🌍 World Cup win rate: **{a_wc:.0%}**")
+            st.write(f"🎯 Avg shots on target: **{a_sot:.1f}**")
+            st.write(f"🔄 Avg possession: **{a_poss:.1f}%**")
+
+        st.divider()
+        st.caption("Built by Shivam Kumar · [GitHub](https://github.com/ShivamKumar20-AI/world-cup-predictor) · Model accuracy: 58.03%")
