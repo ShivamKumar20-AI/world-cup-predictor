@@ -447,4 +447,4 @@ else:
             st.write(f"🔄 Avg possession: **{a_poss:.1f}%**")
 
         st.divider()
-        st.caption("Built by Shivam Kumar · [GitHub](https://github.com/ShivamKumar20-AI/world-cup-predictor) · Model accuracy: 60.02%")
+        st.caption("Built by Shivam Kumar · [GitHub](https://github.com/ShivamKumar20-AI/world-cup-predictor) · Model accuracy: 60.24%")
