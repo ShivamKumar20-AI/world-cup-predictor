@@ -87,11 +87,12 @@ def build_team_form_cache(results, n=10):
             past = team_matches.iloc[max(0, i - n):i]
 
             if len(past) == 0:
-                cache[(team, match["date"])] = (0.5, 0.0, 0.0, 0.5)
+                cache[(team, match["date"])] = (0.5, 0.0, 0.0, 0.5, 0.0)
                 continue
 
             points, goals_scored, goals_conceded = [], [], []
             wins = 0
+            clean_sheets = 0
 
             for _, row in past.iterrows():
                 w = tournament_weight(row["tournament"])
@@ -107,13 +108,16 @@ def build_team_form_cache(results, n=10):
                     else:                     points.append(0)
                 goals_scored.append(gs)
                 goals_conceded.append(gc)
+                if gc == 0:
+                    clean_sheets += 1
 
             form = np.sum(points) / (len(points) * 3.0)
             cache[(team, match["date"])] = (
                 form,
                 np.mean(goals_scored),
                 np.mean(goals_conceded),
-                wins / len(past)
+                wins / len(past),
+                clean_sheets / len(past),
             )
 
     return cache
@@ -289,11 +293,11 @@ def load_and_prepare():
     for _, match in tqdm(results.iterrows(), total=len(results), desc="Assembling rows"):
         ht, at, date = match["home_team"], match["away_team"], match["date"]
 
-        h_form, h_gf, h_ga, h_wr = form_cache.get((ht, date), (0.5, 0.0, 0.0, 0.5))
-        a_form, a_gf, a_ga, a_wr = form_cache.get((at, date), (0.5, 0.0, 0.0, 0.5))
+        h_form, h_gf, h_ga, h_wr, h_cs_rate = form_cache.get((ht, date), (0.5, 0.0, 0.0, 0.5, 0.0))
+        a_form, a_gf, a_ga, a_wr, a_cs_rate = form_cache.get((at, date), (0.5, 0.0, 0.0, 0.5, 0.0))
 
-        h_form5, _, _, _ = form_cache_5.get((ht, date), (0.5, 0.0, 0.0, 0.5))
-        a_form5, _, _, _ = form_cache_5.get((at, date), (0.5, 0.0, 0.0, 0.5))
+        h_form5, _, _, _, _ = form_cache_5.get((ht, date), (0.5, 0.0, 0.0, 0.5, 0.0))
+        a_form5, _, _, _, _ = form_cache_5.get((at, date), (0.5, 0.0, 0.0, 0.5, 0.0))
         h_form_trend = h_form5 - h_form
         a_form_trend = a_form5 - a_form
 
@@ -330,6 +334,11 @@ def load_and_prepare():
             "home_win_rate":         h_wr,
             "away_win_rate":         a_wr,
             "win_rate_diff":         h_wr - a_wr,
+            "home_win_rate":         h_wr,
+            "away_win_rate":         a_wr,
+            "home_clean_sheet_rate": h_cs_rate,
+            "away_clean_sheet_rate": a_cs_rate,
+            "clean_sheet_rate_diff": h_cs_rate - a_cs_rate,
             # FIFA rank (lower = better; positive diff = home team ranked higher)
             "home_rank":             h_rank,
             "away_rank":             a_rank,

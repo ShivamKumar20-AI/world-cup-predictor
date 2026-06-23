@@ -24,6 +24,7 @@ FEATURES = [
     "home_possession", "away_possession",
     "shots_on_target_diff", "possession_diff",
     "home_form_trend", "away_form_trend", "form_trend_diff",
+    "home_clean_sheet_rate", "away_clean_sheet_rate", "clean_sheet_rate_diff",
 ]
 
 

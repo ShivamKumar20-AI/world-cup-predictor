@@ -270,7 +270,19 @@ def get_wc_team_stats(wc_stats, team):
         sot if not np.isnan(sot) else 5.0,
         poss if not np.isnan(poss) else 50.0
     )
-
+def get_clean_sheet_rate(df_results, team, n=10):
+    matches = df_results[
+        ((df_results["home_team"] == team) | (df_results["away_team"] == team)) &
+        (df_results["home_score"].notna())
+    ].tail(n)
+    if len(matches) == 0:
+        return 0.0
+    clean_sheets = 0
+    for _, row in matches.iterrows():
+        gc = float(row["away_score"]) if row["home_team"] == team else float(row["home_score"])
+        if gc == 0:
+            clean_sheets += 1
+    return clean_sheets / len(matches)
 st.set_page_config(page_title="2026 World Cup Predictor", page_icon="⚽", layout="centered")
 
 st.title("⚽ 2026 FIFA World Cup Predictor")
@@ -332,6 +344,8 @@ else:
         with st.spinner("Analysing team data..."):
             h_form, h_gf, h_ga, h_wr = get_team_stats(df_results, home_team)
             a_form, a_gf, a_ga, a_wr = get_team_stats(df_results, away_team)
+            h_cs_rate = get_clean_sheet_rate(df_results, home_team)
+            a_cs_rate = get_clean_sheet_rate(df_results, away_team)
             h_form5, _, _, _ = get_team_stats(df_results, home_team, n=5)
             a_form5, _, _, _ = get_team_stats(df_results, away_team, n=5)
             h_rank = get_ranking(rankings, home_team)
@@ -364,7 +378,9 @@ else:
                 h_poss - a_poss,
                 h_form5 - h_form,
                 a_form5 - a_form,
-                (h_form5 - h_form) - (a_form5 - a_form)
+                (h_form5 - h_form) - (a_form5 - a_form),
+                h_cs_rate, a_cs_rate,
+                h_cs_rate - a_cs_rate
             ]])
 
             prediction = model.predict(features)[0]
