@@ -6,4 +6,4 @@ requests
 python-dotenv
 kaggle
 matplotlib
-seaborn
+seabornxgboost
