@@ -15,7 +15,7 @@ https://fifa-world-cup-predictor-2026.streamlit.app/
 | + Elo ratings | 57.79% |
 | + WC shots, possession, cards | 58.03% |
 | + Time-based split (honest evaluation) | 59.72% |
-| + XGBoost + time-decay form weighting | **60.02%** |
+| + XGBoost + time-decay form weighting | **60.24%** |
 
 ### 🧠 How It Works
 - **Data Prep:** Historical match data (2000–2026) is cleaned and features (form, goals, rankings, Elo) are engineered with exponential time-decay weighting so recent matches count more than older ones.
